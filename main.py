@@ -1,9 +1,11 @@
 #Interfaz que generara un reporte a partir de una conexion de PostgreSQL 
 #paran posteriormente formatearlo y generar un CSV en el formato deseado
+import string
 import psycopg2
 import csv
 import json
 from datetime import datetime
+from decimal import Decimal
 
 def connect_to_db():
     try:
@@ -67,7 +69,7 @@ def generate_report(connection):
                 continue  # Saltar entradas con num_ingreso igual a 1
             dt_obj = datetime.strptime(str(row[1]), '%Y-%m-%d %H:%M:%S.%f')
             fecha_toma = dt_obj.strftime('%Y-%m-%d')
-            nombre_paciente = f"{row[2]} {row[3]}"
+            nombre_paciente = f"{str(row[2]).strip()} {str(row[3]).strip()}"
             sexo_paciente = row[4]
             ci_paciente = row[5]
             dt_obj = datetime.strptime(str(row[6]), '%Y-%m-%d %H:%M:%S.%f') if row[6] is not None else None
@@ -84,13 +86,13 @@ def generate_report(connection):
         # Si la boleta no está en el diccionario, la agregamos
             if num_ingreso not in boletas_agrupadas:
                 boletas_agrupadas[num_ingreso] = {
-                    "codigoE": f'"{codigo_bloom}"',
-                    "Boleta": f'"{num_ingreso}"',
+                    "codigoE": codigo_bloom,
+                    "Boleta": num_ingreso,
                     "FechaTomaMx": '#'+str(fecha_toma)+'#',
-                    "Paciente": f'"{nombre_paciente}"',
-                    "Edad": f'"{edad_dias}"', # Edad del paciente en dias
-                    "Sexo": f'"{sexo_paciente}"',
-                    "Expediente": f'"{ci_paciente}"',
+                    "Paciente": utf_to_ansi(nombre_paciente),
+                    "Edad": edad_dias, # Edad del paciente en dias
+                    "Sexo": sexo_paciente,
+                    "Expediente": ci_paciente,
                     "Recepcion": "#NULL#", # TODO Fecha de Recepcion (Manual temporalmente)
                     "Procesamiento": "#NULL#", # Fecha de Procesamiento
                     "FResultado": "#NULL#", # Fecha de Resultado
@@ -106,7 +108,7 @@ def generate_report(connection):
             clave_resultado = int(id_prueba)
             if clave_resultado in boletas_agrupadas[num_ingreso]["Resultados"]:
                 if valor_resultado is not None and valor_resultado != "":
-                    boletas_agrupadas[num_ingreso]["Resultados"][clave_resultado] = f'"{valor_resultado}"'
+                    boletas_agrupadas[num_ingreso]["Resultados"][clave_resultado] = valor_resultado
                 boletas_agrupadas[num_ingreso]["StdoBoleta"] = "A" # Si encuentra un examen cambia el estado de la boleta a A
                 if actualizado_timestamp is not None:
                     #actualizado_timestamp = "#NULL#"
@@ -137,51 +139,93 @@ def generate_report(connection):
             print("Conexión a la base de datos cerrada.")
             return boletas_agrupadas
 
-# Escribir los datos en un archivo CSV
 def write_to_csv(boletas_agrupadas, filename="reporte_labsis.csv"):
     try:
-        
-        #Definicio de los encabezados del CSV
-        encabezados = ['"codigoE"', '"Boleta"', '"FechaTomaMx"', '"Paciente"', '"Edad"', '"Sexo"', '"Expediente"', 
-                       '"Recepcion"', '"Procesamiento"', '"FResultado"', '"Resultado"', '"FechaRechazo"', '"EstadoPaciente"', 
-                       '"StdoBoleta"', '"Update"', '"ReferidoPor"', '"Id"', '"ResultadoIRT"', '"ResultadoPKU"', '"Resultado17OH"', 
-                       '"ResultadoJarabeA1"', '"ResultadoJarabeA2"', '"ResultadoTyr"', '"ResultHbF"', '"ResultHbA"', '"ResultHbS"', 
-                       '"ResultHbC"']
+        # Columnas internas
+        encabezados_internos = [
+            "codigoE", "Boleta", "FechaTomaMx", "Paciente", "Edad", "Sexo", "Expediente",
+            "Recepcion", "Procesamiento", "FResultado", "Resultado", "FechaRechazo", "EstadoPaciente",
+            "StdoBoleta", "Update", "ReferidoPor", "Id", "ResultadoIRT", "ResultadoPKU", "Resultado17OH",
+            "ResultadoJarabeA1", "ResultadoJarabeA2", "ResultadoTyr", "ResultHbF", "ResultHbA", "ResultHbS",
+            "ResultHbC"
+        ]
 
-        #Mapeo de ids de resultados a los encabezados:
-        
+        # Mapeo de id de prueba a columna
         id_to_header = {
-            852: "Resultado",
-            859: "ResultadoIRT",
-            854: "ResultadoPKU",
-            883: "Resultado17OH",
-            886: "ResultadoJarabeA1",
-            885: "ResultadoJarabeA2",
-            888: "ResultadoTyr",
-            889: "ResultHbF",
-            890: "ResultHbA",
-            891: "ResultHbS",
-            892: "ResultHbC"
+            "852": "Resultado",
+            "859": "ResultadoIRT",
+            "854": "ResultadoPKU",
+            "883": "Resultado17OH",
+            "886": "ResultadoJarabeA1",
+            "885": "ResultadoJarabeA2",
+            "888": "ResultadoTyr",
+            "889": "ResultHbF",
+            "890": "ResultHbA",
+            "891": "ResultHbS",
+            "892": "ResultHbC"
         }
-        
-        with open(filename, mode="w", newline="") as csv_file:
-            writer = csv.DictWriter(csv_file, fieldnames=encabezados)
-            writer.writeheader()
+
+        with open(filename, mode="w", newline="", encoding="ANSI") as f:
+            # Escribimos encabezados con comillas
+            f.write(','.join([f'"{h}"' for h in encabezados_internos]) + '\n')
+
             for boleta_data in boletas_agrupadas.values():
-                row = boleta_data.copy()
-                # Extraemos los resultados del sub-diccionario y los asignamos a las columnas correspondientes
-                resultados = row.pop("Resultados")
-                for id_resultado, valor in resultados.items():
-                    header = id_to_header.get(id_resultado)
-                    if header:
-                        row[header] = valor
-                
-                #Agregando campos especiales
-                #row["Boleta"] = row.get("Boleta")
-                writer.writerow(row)
+                # Inicializamos la fila con #NULL#
+                row = ["#NULL#"] * len(encabezados_internos)
+
+                # Llenamos campos principales (excepto resultados)
+                for idx, k in enumerate(encabezados_internos):
+                    if k in id_to_header.values():
+                        continue
+                    val = boleta_data.get(k, "#NULL#")
+                    row[idx] = f'"{val}"' if not (isinstance(val, str) and val.startswith("#")) else val
+
+                # Llenamos resultados en la columna correcta
+                resultados = boleta_data.get('Resultados', {})
+                for id_res_str, col_name in id_to_header.items():
+                    idx = encabezados_internos.index(col_name)
+                    val = resultados.get(int(id_res_str), "#NULL#")  # usar la clave tal cual como string
+
+                    if isinstance(val, str):
+                        val_strip = val.strip()
+                        if val_strip == "#NULL#" or val_strip.startswith("#"):
+                            row[idx] = val_strip
+                        else:
+                            try:
+                                row[idx] = f"{float(val_strip):.1f}"  # 1 decimal
+                            except ValueError:
+                                row[idx] = f'"{val_strip}"'
+                    elif isinstance(val, (float, Decimal)):
+                        row[idx] = f"{val:.1f}"
+                    else:
+                        row[idx] = f'"{val}"'
+
+                # Escribimos la fila
+                f.write(','.join(row) + '\n')
+
         print(f"Datos escritos en {filename} exitosamente.")
+
     except Exception as e:
         print(f"Error escribiendo el archivo CSV: {e}")
+
+# Clase que convierte el nombre que estan en UTF a ANSI. cambia la ñ por n y las vocales con tilde por vocal sin tilde 
+def utf_to_ansi(text):
+    replacements = {
+        'ñ': 'n', 'Ñ': 'N',
+        'á': 'a', 'Á': 'A',
+        'é': 'e', 'É': 'E',
+        'í': 'i', 'Í': 'I',
+        'ó': 'o', 'Ó': 'O',
+        'ú': 'u', 'Ú': 'U'
+    }
+    for utf_char, ansi_char in replacements.items():
+        text = text.replace(utf_char, ansi_char)
+    return text
+
+
+
+
+
 
 # cLASE PARA LEER UN CSV LLAMADO 
 
