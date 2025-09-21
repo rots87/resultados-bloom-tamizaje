@@ -14,7 +14,8 @@ def connect_to_db():
             dbname="labsis",
             user="labsis",
             password="labsis",
-            host="172.17.90.26",  # Cambia esto si tu base de datos está en otro host
+            #host="172.17.90.26",  # Cambia esto si tu base de datos está en otro host
+            host="localhost",  # Cambia esto si tu base de datos está en otro host
             port="5432"  # Cambia esto si tu base de datos usa otro puerto
         )
         return connection
@@ -28,7 +29,7 @@ def generate_report(connection):
         return
     try:
         cursor = connection.cursor()
-        query = """SELECT OT.num_ingreso, OT.fecha, P.nombre, P.apellido, P.sexo, P.ci_paciente, RN.actualizado_timestamp,RN.valor, PR.id, OT.numero, OTDE.edad_dias, OTDE.edad_horas, SM.codigo_bloom, SM.codigo_dtic
+        query = """SELECT OT.num_ingreso, OT.fecha_toma_muestra, P.nombre, P.apellido, P.sexo, P.ci_paciente, RN.actualizado_timestamp,RN.valor, PR.id, OT.numero, OTDE.edad_dias, OTDE.edad_horas, SM.codigo_bloom, SM.codigo_dtic, OTDE.fecha_recepcion
         FROM orden_trabajo OT
         LEFT JOIN paciente P ON OT.paciente_ID = P.id
         LEFT JOIN prueba_orden PO ON OT.id = PO.orden_id
@@ -41,11 +42,9 @@ def generate_report(connection):
         #fecha_inicio = '2025-09-01'  # TODO Reemplazar por un valor obtenido de un datepicker
         #fecha_fin = '2025-09-09'     # TODO Reemplazar por un valor obtenido de un datepicker
         orden_inicio = 169197
-        orden_fin = 169462
+        orden_fin = 170955
         cursor.execute(query, (orden_inicio, orden_fin))  # Cambia esto por tu consulta
-        # WHERE OT.numero = '2508210123'
         rows = cursor.fetchall()
-        fecha_recepcion = "#2025-08-14#"  # TODO Obtener la fecha de recepción de los datos
         #definicion de resultados
         resultados_esperados = {
             852: '#NULL#',
@@ -67,8 +66,9 @@ def generate_report(connection):
             num_ingreso = row[0]
             if num_ingreso == '1':
                 continue  # Saltar entradas con num_ingreso igual a 1
-            dt_obj = datetime.strptime(str(row[1]), '%Y-%m-%d %H:%M:%S.%f')
-            fecha_toma = dt_obj.strftime('%Y-%m-%d')
+            #convertir fecha de toma de muestra recibida de ""2025-08-22 00:00:00-06"" a "2025-08-22"
+            dt_obj = datetime.strptime(str(row[1]), '%Y-%m-%d %H:%M:%S%z') if row[1] is not None else None
+            fecha_toma = dt_obj.strftime('%Y-%m-%d') if dt_obj is not None else "NULL"
             nombre_paciente = f"{str(row[2]).strip()} {str(row[3]).strip()}"
             sexo_paciente = row[4]
             ci_paciente = row[5]
@@ -83,6 +83,9 @@ def generate_report(connection):
                 edad_dias = int(edad_horas / 24)
             codigo_bloom = row[12]
             codigo_dtic = row[13]
+            #convertier fecha de recepcion recibida de "2025-08-28 00:00:00" a "2025-08-28"
+            dt_obj = datetime.strptime(str(row[14]), '%Y-%m-%d %H:%M:%S') if row[14] is not None else None
+            fecha_recepcion = dt_obj.strftime('%Y-%m-%d') if dt_obj is not None else None
         # Si la boleta no está en el diccionario, la agregamos
             if num_ingreso not in boletas_agrupadas:
                 boletas_agrupadas[num_ingreso] = {
@@ -93,7 +96,7 @@ def generate_report(connection):
                     "Edad": edad_dias, # Edad del paciente en dias
                     "Sexo": sexo_paciente,
                     "Expediente": ci_paciente,
-                    "Recepcion": "#NULL#", # TODO Fecha de Recepcion (Manual temporalmente)
+                    "Recepcion": fecha_recepcion,
                     "Procesamiento": "#NULL#", # Fecha de Procesamiento
                     "FResultado": "#NULL#", # Fecha de Resultado
                     "FechaRechazo": fecha_recepcion, # Fecha de Rechazo
@@ -111,8 +114,6 @@ def generate_report(connection):
                     boletas_agrupadas[num_ingreso]["Resultados"][clave_resultado] = valor_resultado
                 boletas_agrupadas[num_ingreso]["StdoBoleta"] = "A" # Si encuentra un examen cambia el estado de la boleta a A
                 if actualizado_timestamp is not None:
-                    #actualizado_timestamp = "#NULL#"
-                    boletas_agrupadas[num_ingreso]["Recepcion"] = fecha_recepcion # Asigna la fecha de recepcion
                     boletas_agrupadas[num_ingreso]["Procesamiento"] = actualizado_timestamp # Asigna la fecha de procesamiento
                     boletas_agrupadas[num_ingreso]["FResultado"] = actualizado_timestamp # Asigna la fecha de resultado
                 boletas_agrupadas[num_ingreso]["FechaRechazo"] = "#NULL#" # Quita la fecha de rechazo si hay resultado
