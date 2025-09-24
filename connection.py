@@ -97,7 +97,7 @@ def generate_report(connection: psycopg2.extensions.connection,
     query = """
         SELECT OT.num_ingreso, OT.fecha_toma_muestra, P.nombre, P.apellido, P.sexo, P.ci_paciente, 
                RN.actualizado_timestamp, RN.valor, PR.id, OT.numero, OTDE.edad_dias, OTDE.edad_horas, 
-               SM.codigo_bloom, SM.codigo_dtic, OTDE.fecha_recepcion, RA.valor, RA.validado_por
+               SM.codigo_bloom, SM.codigo_dtic, OTDE.fecha_recepcion, RA.valor, RA.validado_por, OTDE.update
         FROM orden_trabajo OT
         LEFT JOIN paciente P ON OT.paciente_ID = P.id
         LEFT JOIN prueba_orden PO ON OT.id = PO.orden_id
@@ -147,6 +147,8 @@ def generate_report(connection: psycopg2.extensions.connection,
                         num_ingreso, fecha_toma, nombre_paciente, sexo_paciente,
                         ci_paciente, edad_dias, fecha_recepcion, codigo_bloom, codigo_dtic
                     )
+                # Asignar el valor de Update desde OTDE.update
+                boletas_agrupadas[num_ingreso]["Update"] = row[17] if row[17] is not None else "#NULL#"
 
                 # Procesar resultado si hay id_prueba válido
                 if id_prueba is not None:
@@ -175,25 +177,16 @@ def generate_report(connection: psycopg2.extensions.connection,
     
     return boletas_agrupadas
 
-def format_result_value(val: Any) -> str:
-    """Formatea un valor de resultado para CSV."""
-    if isinstance(val, str):
-        val_strip = val.strip()
-        if val_strip == "#NULL#" or val_strip.startswith("#"):
-            return val_strip
-        try:
-            return f"{float(val_strip):.1f}"
-        except ValueError:
-            return f'"{val_strip}"'
-    elif isinstance(val, (float, Decimal)):
-        return f"{val:.1f}"
-    else:
-        return f'"{val}"'
+def format_result_value(val):
+    try:
+        if val in ("#NULL#", None):
+            return "#NULL#"
+        return f"{float(val):.1f}"
+    except (ValueError, TypeError):
+        return str(val)
 
 def write_to_csv(boletas_agrupadas: Dict[str, Dict[str, Any]], filename: str = "reporte_labsis.csv") -> None:
     """Escribe los datos agrupados a un archivo CSV."""
-    
-    # Configuración de columnas y mapeo
     encabezados_internos = [
         "codigoE", "Boleta", "FechaTomaMx", "Paciente", "Edad", "Sexo", "Expediente",
         "Recepcion", "Procesamiento", "FResultado", "Resultado", "FechaRechazo", "EstadoPaciente",
@@ -202,36 +195,95 @@ def write_to_csv(boletas_agrupadas: Dict[str, Dict[str, Any]], filename: str = "
         "ResultHbC"
     ]
 
-    id_to_header = {
-        "852": "Resultado", "859": "ResultadoIRT", "854": "ResultadoPKU", "883": "Resultado17OH",
-        "886": "ResultadoJarabeA1", "885": "ResultadoJarabeA2", "888": "ResultadoTyr",
-        "889": "ResultHbF", "890": "ResultHbA", "891": "ResultHbS", "892": "ResultHbC"
+    resultado_map = {
+        "ResultadoIRT": 859,
+        "ResultadoPKU": 854,
+        "Resultado17OH": 883,
+        "ResultadoJarabeA1": 886,
+        "ResultadoJarabeA2": 885,
+        "ResultadoTyr": 888,
+        "ResultHbF": 889,
+        "ResultHbA": 890,
+        "ResultHbS": 891,
+        "ResultHbC": 892,
+        "Resultado": 852
     }
+
+    def format_csv_value(value):
+        # No comillas si empieza y termina con #
+        if isinstance(value, str) and value.startswith("#") and value.endswith("#"):
+            return value
+        # No comillas si es numérico
+        try:
+            float_val = float(value)
+            return f"{float_val:.1f}"
+        except (ValueError, TypeError):
+            pass
+        # Comillas solo si es alfanumérico y no cumple lo anterior
+        return f'"{value}"'
 
     try:
         with open(filename, mode="w", newline="", encoding="ANSI") as f:
-            # Escribir encabezados
-            f.write(','.join([f'"{h}"' for h in encabezados_internos]) + '\n')
-
+            f.write(','.join([format_csv_value(h) for h in encabezados_internos]) + '\n')
             for boleta_data in boletas_agrupadas.values():
-                row = ["#NULL#"] * len(encabezados_internos)
-
-                # Llenar campos principales
-                for idx, campo in enumerate(encabezados_internos):
-                    if campo not in id_to_header.values():
-                        val = boleta_data.get(campo, "#NULL#")
-                        row[idx] = f'"{val}"' if not (isinstance(val, str) and val.startswith("#")) else val
-
-                # Llenar resultados
-                resultados = boleta_data.get('Resultados', {})
-                for id_str, col_name in id_to_header.items():
-                    idx = encabezados_internos.index(col_name)
-                    val = resultados.get(int(id_str), "#NULL#")
-                    row[idx] = format_result_value(val)
-
+                row = []
+                for campo in encabezados_internos:
+                    if campo in resultado_map:
+                        value = boleta_data.get("Resultados", {}).get(resultado_map[campo], "#NULL#")
+                        value = format_result_value(value)
+                        # Solo poner comillas si es numérico y no es #NULL#
+                        if value not in ("#NULL#", None) and not (isinstance(value, str) and value.startswith("#") and value.endswith("#")):
+                            try:
+                                float_val = float(value)
+                                value = f'"{float_val:.1f}"'
+                            except (ValueError, TypeError):
+                                value = f'"{value}"'
+                        # Si es #NULL# o está entre #, no poner comillas
+                    else:
+                        value = boleta_data.get(campo, "#NULL#")
+                        if campo == "Update":
+                            value = value.upper() if value not in ("#NULL#", None) else "#NULL#"
+                            if value not in ("#NULL#", None) and not (isinstance(value, str) and value.startswith("#") and value.endswith("#")):
+                                value = f'"{value}"'
+                        # Si el campo es Boleta, Expediente o Edad, siempre entre comillas
+                        if campo in ("codigoE","Paciente","Boleta", "Expediente", "Edad", "Sexo", "Id","StdoBoleta"):
+                            value = f'"{value}"'
+                    # Si el campo es Recepcion, siempre entre ##
+                    if campo == "Recepcion":
+                        if not (isinstance(value, str) and value.startswith("#") and value.endswith("#")):
+                            value = f"#{value}#"
+                        row.append(value)
+                    else:
+                        row.append(value)
+                    
                 f.write(','.join(row) + '\n')
 
         print(f"Datos escritos en {filename} exitosamente.")
 
     except Exception as e:
         print(f"Error escribiendo el archivo CSV: {e}")
+
+def update_boleta_update(num_ingreso: str, valor_update: str) -> None:
+    """Actualiza el campo Update en la base de datos usando num_ingreso."""
+    conn = connect_to_db()
+    if conn is None:
+        raise Exception("No se pudo conectar a la base de datos")
+    try:
+        with conn.cursor() as cursor:
+            # Buscar el orden_id usando num_ingreso
+            cursor.execute(
+                "SELECT id FROM orden_trabajo WHERE num_ingreso = %s",
+                (num_ingreso,)
+            )
+            result = cursor.fetchone()
+            if not result:
+                raise Exception(f"No se encontró orden_id para num_ingreso {num_ingreso}")
+            orden_id = result[0]
+            # Actualizar el campo update en orden_trabajo_datos_extra usando orden_id
+            cursor.execute(
+                "UPDATE orden_trabajo_datos_extra SET update = %s WHERE orden_id = %s",
+                (valor_update if valor_update else None, orden_id)
+            )
+            conn.commit()
+    finally:
+        conn.close()

@@ -130,6 +130,7 @@ class OpenPreviewResults(QtWidgets.QDialog):
         self.tblResults.setHorizontalHeaderLabels(columnas_tabla)
         self.tblResults.setAlternatingRowColors(True)
         self.tblResults.setSortingEnabled(True)
+        self.tblResults.setEditTriggers(QtWidgets.QAbstractItemView.EditTrigger.DoubleClicked)
         
         # Inicialmente deshabilitar exportación hasta cargar datos
         self.btnExport.setEnabled(False)
@@ -138,6 +139,7 @@ class OpenPreviewResults(QtWidgets.QDialog):
         """Conecta las señales con sus respectivos slots."""
         self.btnback.clicked.connect(self._on_back)
         self.btnExport.clicked.connect(self._on_export)
+        self.tblResults.itemChanged.connect(self._on_update_changed)
     
     def _load_data(self):
         """Carga los datos del reporte."""
@@ -170,30 +172,37 @@ class OpenPreviewResults(QtWidgets.QDialog):
         """Llena la tabla con los datos del reporte."""
         if not self.data:
             return
-        
-        # Deshabilitar ordenamiento durante la carga para mejor rendimiento
+
+        # Desconectar la señal para evitar disparos durante la carga
+        self.tblResults.itemChanged.disconnect(self._on_update_changed)
+
         self.tblResults.setSortingEnabled(False)
         self.tblResults.setRowCount(len(self.data))
-        
+
         for row_idx, boleta in enumerate(self.data.values()):
             # Llenar columnas normales
             for col_idx, col_name in enumerate(self.COLUMNAS_NORMALES):
                 value = boleta.get(col_name, "#NULL#")
                 item = QtWidgets.QTableWidgetItem(str(value))
+                if col_name != "Update":
+                    item.setFlags(item.flags() & ~QtCore.Qt.ItemFlag.ItemIsEditable)
                 self.tblResults.setItem(row_idx, col_idx, item)
-            
+
             # Llenar columnas de resultados usando aliases
-            for col_idx, (id_resultado, _) in enumerate(self.RESULTADOS_ALIAS.items(), 
+            for col_idx, (id_resultado, _) in enumerate(self.RESULTADOS_ALIAS.items(),
                                                        start=len(self.COLUMNAS_NORMALES)):
                 value = boleta.get("Resultados", {}).get(id_resultado, "#NULL#")
+                value = connection.format_result_value(value)  # <-- Formatea a una sola decima
                 item = QtWidgets.QTableWidgetItem(str(value))
+                item.setFlags(item.flags() & ~QtCore.Qt.ItemFlag.ItemIsEditable)
                 self.tblResults.setItem(row_idx, col_idx, item)
-        
-        # Reactivar ordenamiento y ajustar columnas
+
         self.tblResults.setSortingEnabled(True)
         self.tblResults.resizeColumnsToContents()
-        
-        # Mostrar estadísticas básicas
+
+        # Reconectar la señal después de poblar la tabla
+        self.tblResults.itemChanged.connect(self._on_update_changed)
+
         self._show_statistics()
     
     def _show_statistics(self):
@@ -241,6 +250,35 @@ class OpenPreviewResults(QtWidgets.QDialog):
         except Exception as e:
             QMessageBox.critical(self, "Error de exportación", f"Error al exportar: {str(e)}")
     
+    def _on_update_changed(self, item):
+        """Valida y actualiza el campo Update en la base de datos usando el número de Boleta."""
+        col_idx = item.column()
+        col_name = self.tblResults.horizontalHeaderItem(col_idx).text()
+        if col_name != "Update":
+            return  # Solo permitir edición en Update
+
+        new_value = item.text().strip().upper()  # Convertir a mayúscula
+        if new_value not in ("X", ""):
+            QMessageBox.warning(self, "Valor inválido", "Solo se permite 'X' o dejar en blanco.")
+            self._load_data()  # Recargar la tabla
+            return
+
+        row_idx = item.row()
+        num_ingreso = self.tblResults.item(row_idx, self.COLUMNAS_NORMALES.index("Boleta")).text()
+
+        try:
+            connection.update_boleta_update(num_ingreso, new_value)
+            # Guardar en el diccionario en mayúscula
+            self.data[num_ingreso]["Update"] = new_value if new_value else "#NULL#"
+            # Actualizar visualmente la celda en la tabla
+            item.setText(new_value)
+            # Si el valor es en blanco, recargar la tabla para mostrar #NULL#
+            if new_value == "":
+                self._load_data()
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"No se pudo actualizar: {str(e)}")
+            self._load_data()
+
     def closeEvent(self, event):
         """Maneja el evento de cierre de ventana."""
         self.reject()
