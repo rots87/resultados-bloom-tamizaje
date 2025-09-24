@@ -1,237 +1,262 @@
-#Interfaz que generara un reporte a partir de una conexion de PostgreSQL 
-#paran posteriormente formatearlo y generar un CSV en el formato deseado
-import string
-import psycopg2
-import csv
-import json
-from datetime import datetime
-from decimal import Decimal
+"""
+Interfaz que generará un reporte a partir de una conexión de PostgreSQL 
+para posteriormente formatearlo y generar un CSV en el formato deseado.
+"""
+import os
+import sys
+from typing import Dict, Any, Optional
+from PyQt6 import uic, QtWidgets, QtCore
+from PyQt6.QtWidgets import QMessageBox
+import connection
 
-def connect_to_db():
+
+def resource_path(relative_path: str) -> str:
+    """Obtiene la ruta absoluta de un recurso, compatible con PyInstaller."""
     try:
-        # Conectar a la base de datos PostgreSQL
-        connection = psycopg2.connect(
-            dbname="labsis",
-            user="labsis",
-            password="labsis",
-            #host="172.17.90.26",  # Cambia esto si tu base de datos está en otro host
-            host="localhost",  # Cambia esto si tu base de datos está en otro host
-            port="5432"  # Cambia esto si tu base de datos usa otro puerto
-        )
-        return connection
-    except Exception as e:
-        print(f"Error connecting to the database: {e}")
-        return None
+        base_path = sys._MEIPASS  # carpeta temporal de PyInstaller
+    except AttributeError:
+        base_path = os.path.abspath(".")  # ejecución normal en .py
+    return os.path.join(base_path, relative_path)
 
-def generate_report(connection):
-    if connection is None:
-        print("No database connection available.")
-        return
-    try:
-        cursor = connection.cursor()
-        query = """SELECT OT.num_ingreso, OT.fecha_toma_muestra, P.nombre, P.apellido, P.sexo, P.ci_paciente, RN.actualizado_timestamp,RN.valor, PR.id, OT.numero, OTDE.edad_dias, OTDE.edad_horas, SM.codigo_bloom, SM.codigo_dtic, OTDE.fecha_recepcion
-        FROM orden_trabajo OT
-        LEFT JOIN paciente P ON OT.paciente_ID = P.id
-        LEFT JOIN prueba_orden PO ON OT.id = PO.orden_id
-        LEFT JOIN resultado_numer RN ON PO.id = RN.pruebao_id
-        LEFT JOIN prueba PR ON PR.id = PO.prueba_id
-        LEFT JOIN orden_trabajo_datos_extra OTDE ON OT.id = OTDE.orden_id
-        LEFT  JOIN servicio_medico SM ON OT.servicio_medico_id = SM.id
-        WHERE OT.id BETWEEN %s AND %s
-        """ 
-        #fecha_inicio = '2025-09-01'  # TODO Reemplazar por un valor obtenido de un datepicker
-        #fecha_fin = '2025-09-09'     # TODO Reemplazar por un valor obtenido de un datepicker
-        orden_inicio = 169197
-        orden_fin = 170955
-        cursor.execute(query, (orden_inicio, orden_fin))  # Cambia esto por tu consulta
-        rows = cursor.fetchall()
-        #definicion de resultados
-        resultados_esperados = {
-            852: '#NULL#',
-            859: '#NULL#',
-            854: '#NULL#',
-            883: '#NULL#',
-            886: '#NULL#',
-            885: '#NULL#',
-            888: '#NULL#',
-            889: '#NULL#',
-            890: '#NULL#',
-            891: '#NULL#',
-            892: '#NULL#'
-        }
 
-        #Diccionario para agrupar las pruebas por numero de ingreso
-        boletas_agrupadas = {}
-        for row in rows:
-            num_ingreso = row[0]
-            if num_ingreso == '1':
-                continue  # Saltar entradas con num_ingreso igual a 1
-            #convertir fecha de toma de muestra recibida de ""2025-08-22 00:00:00-06"" a "2025-08-22"
-            dt_obj = datetime.strptime(str(row[1]), '%Y-%m-%d %H:%M:%S%z') if row[1] is not None else None
-            fecha_toma = dt_obj.strftime('%Y-%m-%d') if dt_obj is not None else "NULL"
-            nombre_paciente = f"{str(row[2]).strip()} {str(row[3]).strip()}"
-            sexo_paciente = row[4]
-            ci_paciente = row[5]
-            dt_obj = datetime.strptime(str(row[6]), '%Y-%m-%d %H:%M:%S.%f') if row[6] is not None else None
-            actualizado_timestamp = f"#{dt_obj.strftime('%Y-%m-%d %H:%M:%S')}#" if dt_obj is not None else None # Fecha y hora del resultado
-            valor_resultado = row[7] if row[7] is not None else '#NULL#'
-            id_prueba = row[8]
-            edad_dias = row[10]
-            edad_horas = row[11]
-            # Si la edad en dias es menor a 1, calculamos la edad en dias a partir de horas
-            if edad_dias == 0:
-                edad_dias = int(edad_horas / 24)
-            codigo_bloom = row[12]
-            codigo_dtic = row[13]
-            #convertier fecha de recepcion recibida de "2025-08-28 00:00:00" a "2025-08-28"
-            dt_obj = datetime.strptime(str(row[14]), '%Y-%m-%d %H:%M:%S') if row[14] is not None else None
-            fecha_recepcion = dt_obj.strftime('%Y-%m-%d') if dt_obj is not None else None
-        # Si la boleta no está en el diccionario, la agregamos
-            if num_ingreso not in boletas_agrupadas:
-                boletas_agrupadas[num_ingreso] = {
-                    "codigoE": codigo_bloom,
-                    "Boleta": num_ingreso,
-                    "FechaTomaMx": '#'+str(fecha_toma)+'#',
-                    "Paciente": utf_to_ansi(nombre_paciente),
-                    "Edad": edad_dias, # Edad del paciente en dias
-                    "Sexo": sexo_paciente,
-                    "Expediente": ci_paciente,
-                    "Recepcion": fecha_recepcion,
-                    "Procesamiento": "#NULL#", # Fecha de Procesamiento
-                    "FResultado": "#NULL#", # Fecha de Resultado
-                    "FechaRechazo": fecha_recepcion, # Fecha de Rechazo
-                    "EstadoPaciente": "#NULL#", # Segun muestra por defecto es #NULL#
-                    "StdoBoleta": "R", # Valor por defecto, si encunetra un examen debe cambiarlo a A
-                    "Update":"#NULL#", # TODO Pensar como utilizar este valor
-                    "ReferidoPor": "#NULL#", # Segun muestra por defecto es #NULL#
-                    "Id": codigo_dtic,
-                    # Inicializamos los resultados de las pruebas
-                    "Resultados": resultados_esperados.copy()
-                }
-            clave_resultado = int(id_prueba)
-            if clave_resultado in boletas_agrupadas[num_ingreso]["Resultados"]:
-                if valor_resultado is not None and valor_resultado != "":
-                    boletas_agrupadas[num_ingreso]["Resultados"][clave_resultado] = valor_resultado
-                boletas_agrupadas[num_ingreso]["StdoBoleta"] = "A" # Si encuentra un examen cambia el estado de la boleta a A
-                if actualizado_timestamp is not None:
-                    boletas_agrupadas[num_ingreso]["Procesamiento"] = actualizado_timestamp # Asigna la fecha de procesamiento
-                    boletas_agrupadas[num_ingreso]["FResultado"] = actualizado_timestamp # Asigna la fecha de resultado
-                boletas_agrupadas[num_ingreso]["FechaRechazo"] = "#NULL#" # Quita la fecha de rechazo si hay resultado
-            # Si el nombre de la prueba no está en nuestro diccionario esperado, la ignoramos.
-            #elif boletas_agrupadas[num_ingreso]["StdoBoleta"] == "R":
-                #boletas_agrupadas[num_ingreso]["FechaRechazo"] = boletas_agrupadas[num_ingreso]["FechaRecepcion"] # Mantiene la fecha de rechazo si es un rechazo
-            else:
-                continue # Ignorar resultados no esperados FIXME: ESTO ES TEMPORAL, HAY QUE AVISAR AL USUARIO
-            # Asignamos el valor del resultado al sub-diccionario 'resultados'.
-            # Usamos un `try-except` para evitar errores.
-            try:
-                boletas_agrupadas[num_ingreso]["Resultados"][clave_resultado] = valor_resultado
-            except KeyError:
-                print(f"Advertencia: La prueba '{id_prueba}' no está en la lista de resultados esperados.")
+class Main(QtWidgets.QDialog):
+    """Diálogo principal para selección de rango de fechas."""
+    
+    def __init__(self):
+        super().__init__()
+        self._setup_ui()
+        self._connect_signals()
+        self.open_preview = None
+        
+    def _setup_ui(self):
+        """Configura la interfaz de usuario."""
+        ui_path = os.path.join(os.path.dirname(__file__), "fechas.ui")
+        uic.loadUi(resource_path(ui_path), self)
+        self.setWindowTitle("Seleccionar Rango de Fechas")
+        
+        # Configurar fechas por defecto
+        current_date = QtCore.QDate.currentDate()
+        self.deFechaIni.setDate(current_date)
+        self.deFechaFin.setDate(current_date)
+        
+        # Validaciones de fecha
+        self.deFechaIni.setMaximumDate(current_date)
+        self.deFechaFin.setMaximumDate(current_date)
+    
+    def _connect_signals(self):
+        """Conecta las señales con sus respectivos slots."""
+        self.accepted.connect(self.on_accept)
+        self.rejected.connect(self.on_reject)
+        
+        # Validación automática de rango de fechas
+        self.deFechaIni.dateChanged.connect(self._validate_date_range)
+        self.deFechaFin.dateChanged.connect(self._validate_date_range)
+    
+    def _validate_date_range(self):
+        """Asegura que la fecha de inicio no sea posterior a la fecha fin."""
+        if self.deFechaIni.date() > self.deFechaFin.date():
+            self.deFechaFin.setDate(self.deFechaIni.date())
+    
+    def on_accept(self):
+        """Maneja la aceptación del diálogo y abre la vista previa."""
+        fecha_inicio = self.deFechaIni.date().toString("yyyy-MM-dd")
+        fecha_fin = self.deFechaFin.date().toString("yyyy-MM-dd")
+        
+        # Ocultar ventana principal
+        self.hide()
+        
+        try:
+            self.open_preview = OpenPreviewResults(fecha_inicio, fecha_fin, self)
+            # Conectar el evento de cierre para manejar correctamente la aplicación
+            self.open_preview.finished.connect(self._handle_preview_finished)
+            self.open_preview.exec()
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Error al abrir vista previa: {str(e)}")
+            self.show()
+    
+    def _handle_preview_finished(self, result):
+        """Maneja el cierre de la ventana de vista previa."""
+        if result == QtWidgets.QDialog.DialogCode.Accepted:
+            # Si se exportó el archivo, cerrar aplicación completamente
+            QtWidgets.QApplication.quit()
+        else:
+            # Si se canceló, mostrar ventana principal de nuevo
+            self.show()
+    
+    def on_reject(self):
+        """Maneja el rechazo del diálogo cerrando la aplicación."""
+        QtWidgets.QApplication.quit()
+    
+    def closeEvent(self, event):
+        """Maneja el evento de cierre de ventana."""
+        QtWidgets.QApplication.quit()
+        event.accept()
 
-        print("\n--- Diccionario de datos agrupados por boleta ---")
-        print(json.dumps(boletas_agrupadas, indent=4, default=str))
-        print("--- Fin del diccionario ---")
-    except Exception as e:
-        print(f"Error generando el reporte: {e}")
-    finally:
-        if connection is not None:
-            connection.close()
-            print("Conexión a la base de datos cerrada.")
-            return boletas_agrupadas
 
-def write_to_csv(boletas_agrupadas, filename="reporte_labsis.csv"):
-    try:
-        # Columnas internas
-        encabezados_internos = [
-            "codigoE", "Boleta", "FechaTomaMx", "Paciente", "Edad", "Sexo", "Expediente",
-            "Recepcion", "Procesamiento", "FResultado", "Resultado", "FechaRechazo", "EstadoPaciente",
-            "StdoBoleta", "Update", "ReferidoPor", "Id", "ResultadoIRT", "ResultadoPKU", "Resultado17OH",
-            "ResultadoJarabeA1", "ResultadoJarabeA2", "ResultadoTyr", "ResultHbF", "ResultHbA", "ResultHbS",
-            "ResultHbC"
-        ]
-
-        # Mapeo de id de prueba a columna
-        id_to_header = {
-            "852": "Resultado",
-            "859": "ResultadoIRT",
-            "854": "ResultadoPKU",
-            "883": "Resultado17OH",
-            "886": "ResultadoJarabeA1",
-            "885": "ResultadoJarabeA2",
-            "888": "ResultadoTyr",
-            "889": "ResultHbF",
-            "890": "ResultHbA",
-            "891": "ResultHbS",
-            "892": "ResultHbC"
-        }
-
-        with open(filename, mode="w", newline="", encoding="ANSI") as f:
-            # Escribimos encabezados con comillas
-            f.write(','.join([f'"{h}"' for h in encabezados_internos]) + '\n')
-
-            for boleta_data in boletas_agrupadas.values():
-                # Inicializamos la fila con #NULL#
-                row = ["#NULL#"] * len(encabezados_internos)
-
-                # Llenamos campos principales (excepto resultados)
-                for idx, k in enumerate(encabezados_internos):
-                    if k in id_to_header.values():
-                        continue
-                    val = boleta_data.get(k, "#NULL#")
-                    row[idx] = f'"{val}"' if not (isinstance(val, str) and val.startswith("#")) else val
-
-                # Llenamos resultados en la columna correcta
-                resultados = boleta_data.get('Resultados', {})
-                for id_res_str, col_name in id_to_header.items():
-                    idx = encabezados_internos.index(col_name)
-                    val = resultados.get(int(id_res_str), "#NULL#")  # usar la clave tal cual como string
-
-                    if isinstance(val, str):
-                        val_strip = val.strip()
-                        if val_strip == "#NULL#" or val_strip.startswith("#"):
-                            row[idx] = val_strip
-                        else:
-                            try:
-                                row[idx] = f"{float(val_strip):.1f}"  # 1 decimal
-                            except ValueError:
-                                row[idx] = f'"{val_strip}"'
-                    elif isinstance(val, (float, Decimal)):
-                        row[idx] = f"{val:.1f}"
-                    else:
-                        row[idx] = f'"{val}"'
-
-                # Escribimos la fila
-                f.write(','.join(row) + '\n')
-
-        print(f"Datos escritos en {filename} exitosamente.")
-
-    except Exception as e:
-        print(f"Error escribiendo el archivo CSV: {e}")
-
-# Clase que convierte el nombre que estan en UTF a ANSI. cambia la ñ por n y las vocales con tilde por vocal sin tilde 
-def utf_to_ansi(text):
-    replacements = {
-        'ñ': 'n', 'Ñ': 'N',
-        'á': 'a', 'Á': 'A',
-        'é': 'e', 'É': 'E',
-        'í': 'i', 'Í': 'I',
-        'ó': 'o', 'Ó': 'O',
-        'ú': 'u', 'Ú': 'U'
+class OpenPreviewResults(QtWidgets.QDialog):
+    """Diálogo para mostrar vista previa de resultados y exportar CSV."""
+    
+    # Constantes de clase
+    RESULTADOS_ALIAS = {
+        852: "TSH", 859: "IRT", 854: "PKU", 883: "17OH",
+        886: "JarabeA1", 885: "JarabeA2", 888: "Tyr",
+        889: "HbF", 890: "HbA", 891: "HbS", 892: "HbC"
     }
-    for utf_char, ansi_char in replacements.items():
-        text = text.replace(utf_char, ansi_char)
-    return text
+    
+    COLUMNAS_NORMALES = [
+        "codigoE", "Boleta", "FechaTomaMx", "Paciente", "Edad", "Sexo", "Expediente",
+        "Recepcion", "Procesamiento", "FResultado", "FechaRechazo", "EstadoPaciente",
+        "StdoBoleta", "Update", "ReferidoPor", "Id"
+    ]
+    
+    def __init__(self, fecha_inicio: str, fecha_fin: str, parent: Optional[QtWidgets.QWidget] = None):
+        super().__init__(parent)
+        self.fecha_inicio = fecha_inicio
+        self.fecha_fin = fecha_fin
+        self.data: Dict[str, Any] = {}
+        
+        self._setup_ui()
+        self._connect_signals()
+        self._load_data()
+    
+    def _setup_ui(self):
+        """Configura la interfaz de usuario."""
+        uic.loadUi(resource_path("preview.ui"), self)
+        self.setWindowTitle(f"Vista Previa - {self.fecha_inicio} a {self.fecha_fin}")
+        
+        # Configurar tabla
+        columnas_tabla = self.COLUMNAS_NORMALES + list(self.RESULTADOS_ALIAS.values())
+        self.tblResults.setColumnCount(len(columnas_tabla))
+        self.tblResults.setHorizontalHeaderLabels(columnas_tabla)
+        self.tblResults.setAlternatingRowColors(True)
+        self.tblResults.setSortingEnabled(True)
+        
+        # Inicialmente deshabilitar exportación hasta cargar datos
+        self.btnExport.setEnabled(False)
+    
+    def _connect_signals(self):
+        """Conecta las señales con sus respectivos slots."""
+        self.btnback.clicked.connect(self._on_back)
+        self.btnExport.clicked.connect(self._on_export)
+    
+    def _load_data(self):
+        """Carga los datos del reporte."""
+        try:
+            # Mostrar cursor de espera
+            QtWidgets.QApplication.setOverrideCursor(QtCore.Qt.CursorShape.WaitCursor)
+            
+            self.data = self._generate_report()
+            if self.data:
+                self._populate_table()
+                self.btnExport.setEnabled(True)
+            else:
+                QMessageBox.information(self, "Sin datos", "No se encontraron datos para el rango seleccionado.")
+                
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Error al cargar datos: {str(e)}")
+        finally:
+            # Restaurar cursor normal
+            QtWidgets.QApplication.restoreOverrideCursor()
+    
+    def _generate_report(self) -> Dict[str, Any]:
+        """Genera el reporte conectándose a la base de datos."""
+        conn = connection.connect_to_db()
+        if conn is None:
+            raise ConnectionError("No se pudo conectar a la base de datos")
+        
+        return connection.generate_report(conn, self.fecha_inicio, self.fecha_fin)
+    
+    def _populate_table(self):
+        """Llena la tabla con los datos del reporte."""
+        if not self.data:
+            return
+        
+        # Deshabilitar ordenamiento durante la carga para mejor rendimiento
+        self.tblResults.setSortingEnabled(False)
+        self.tblResults.setRowCount(len(self.data))
+        
+        for row_idx, boleta in enumerate(self.data.values()):
+            # Llenar columnas normales
+            for col_idx, col_name in enumerate(self.COLUMNAS_NORMALES):
+                value = boleta.get(col_name, "#NULL#")
+                item = QtWidgets.QTableWidgetItem(str(value))
+                self.tblResults.setItem(row_idx, col_idx, item)
+            
+            # Llenar columnas de resultados usando aliases
+            for col_idx, (id_resultado, _) in enumerate(self.RESULTADOS_ALIAS.items(), 
+                                                       start=len(self.COLUMNAS_NORMALES)):
+                value = boleta.get("Resultados", {}).get(id_resultado, "#NULL#")
+                item = QtWidgets.QTableWidgetItem(str(value))
+                self.tblResults.setItem(row_idx, col_idx, item)
+        
+        # Reactivar ordenamiento y ajustar columnas
+        self.tblResults.setSortingEnabled(True)
+        self.tblResults.resizeColumnsToContents()
+        
+        # Mostrar estadísticas básicas
+        self._show_statistics()
+    
+    def _show_statistics(self):
+        """Muestra estadísticas básicas en el título de la ventana."""
+        total = len(self.data)
+        con_resultados = sum(1 for b in self.data.values() if b.get("StdoBoleta") == "A")
+        self.setWindowTitle(
+            f"Vista Previa - {self.fecha_inicio} a {self.fecha_fin} "
+            f"(Total: {total}, Con resultados: {con_resultados})"
+        )
+    
+    def _on_back(self):
+        """Maneja el botón de regreso."""
+        self.reject()  # Esto cerrará el diálogo con código de rechazo
+    
+    def _on_export(self):
+        """Maneja la exportación de datos a CSV."""
+        if not self.data:
+            QMessageBox.warning(self, "Sin datos", "No hay datos para exportar.")
+            return
+        
+        try:
+            # Obtener nombre de archivo sugerido
+            filename = f"reporte_labsis_{self.fecha_inicio}_a_{self.fecha_fin}.csv"
+            
+            # Abrir diálogo para guardar archivo
+            filepath, _ = QtWidgets.QFileDialog.getSaveFileName(
+                self,
+                "Guardar reporte CSV",
+                filename,
+                "Archivos CSV (*.csv);;Todos los archivos (*)"
+            )
+            
+            if filepath:
+                # Exportar usando la función del módulo connection
+                connection.write_to_csv(self.data, filepath)
+                QMessageBox.information(
+                    self, 
+                    "Exportación exitosa", 
+                    f"El reporte se ha exportado correctamente a:\n{filepath}"
+                )
+                # Cerrar con código de aceptación para indicar exportación exitosa
+                self.accept()
+            
+        except Exception as e:
+            QMessageBox.critical(self, "Error de exportación", f"Error al exportar: {str(e)}")
+    
+    def closeEvent(self, event):
+        """Maneja el evento de cierre de ventana."""
+        self.reject()
+        event.accept()
 
-
-
-
-
-
-# cLASE PARA LEER UN CSV LLAMADO 
 
 if __name__ == "__main__":
-    db_connection = connect_to_db()
-    datos_obtenidos = generate_report(db_connection)
-    write_to_csv(datos_obtenidos)
-    print("Proceso completado.")
+    app = QtWidgets.QApplication(sys.argv)
+    
+    # Configurar estilo de aplicación (opcional)
+    app.setStyle("Fusion")
+    
+    try:
+        window = Main()
+        window.show()
+        sys.exit(app.exec())
+    except Exception as e:
+        QMessageBox.critical(None, "Error Fatal", f"Error al inicializar la aplicación: {str(e)}")
+        sys.exit(1)
