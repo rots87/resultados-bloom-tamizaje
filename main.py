@@ -5,7 +5,7 @@ para posteriormente formatearlo y generar un CSV en el formato deseado.
 import os
 import sys
 from typing import Dict, Any, Optional
-from PyQt6 import uic, QtWidgets, QtCore
+from PyQt6 import uic, QtWidgets, QtCore, QtGui
 from PyQt6.QtWidgets import QMessageBox
 import connection
 
@@ -30,9 +30,11 @@ class Main(QtWidgets.QDialog):
         
     def _setup_ui(self):
         """Configura la interfaz de usuario."""
-        ui_path = os.path.join(os.path.dirname(__file__), "fechas.ui")
-        uic.loadUi(resource_path(ui_path), self)
+        ui_path = resource_path("fechas.ui")
+        uic.loadUi(ui_path, self)
+        self.setWindowIcon(QtGui.QIcon(resource_path("icon.ico")))
         self.setWindowTitle("Seleccionar Rango de Fechas")
+
         
         # Configurar fechas por defecto
         current_date = QtCore.QDate.currentDate()
@@ -122,6 +124,8 @@ class OpenPreviewResults(QtWidgets.QDialog):
     def _setup_ui(self):
         """Configura la interfaz de usuario."""
         uic.loadUi(resource_path("preview.ui"), self)
+        self.setWindowIcon(QtGui.QIcon(resource_path("icon.ico")))
+
         self.setWindowTitle(f"Vista Previa - {self.fecha_inicio} a {self.fecha_fin}")
         
         # Configurar tabla

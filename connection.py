@@ -10,8 +10,8 @@ def connect_to_db() -> Optional[psycopg2.extensions.connection]:
             dbname="labsis",
             user="labsis",
             password="labsis",
-            #host="172.17.90.26" # Ambiente de producción
-            host="localhost", # Ambiente de desarrollo
+            host="172.17.90.26", # Ambiente de producción
+            #host="localhost", # Ambiente de desarrollo
             port="5432"
         )
     except Exception as e:
@@ -85,6 +85,26 @@ def determine_result_value(id_prueba: int, resultado_numerico: Any,
         return resultado_alpha if resultado_alpha is not None else '#NULL#'
     return resultado_numerico if resultado_numerico is not None else '#NULL#'
 
+def get_mas_antiguo_timestamp(ts1, ts2):
+    """Devuelve el timestamp más antiguo (menor) entre dos valores parseados, o #NULL# si ambos son None."""
+    if ts1 and ts2:
+        try:
+            dt1 = datetime.strptime(ts1.strip("#"), "%Y-%m-%d %H:%M:%S")
+            dt2 = datetime.strptime(ts2.strip("#"), "%Y-%m-%d %H:%M:%S")
+            return f"#{min(dt1, dt2).strftime('%Y-%m-%d %H:%M:%S')}#"
+        except Exception:
+            return ts1 or ts2 or "#NULL#"
+    return ts1 or ts2 or "#NULL#"
+
+def es_mas_antigua(fecha_nueva, fecha_existente):
+    """Devuelve True si fecha_nueva es más antigua que fecha_existente."""
+    try:
+        dt_nueva = datetime.strptime(fecha_nueva.strip("#"), "%Y-%m-%d %H:%M:%S")
+        dt_existente = datetime.strptime(fecha_existente.strip("#"), "%Y-%m-%d %H:%M:%S")
+        return dt_nueva < dt_existente
+    except Exception:
+        return False
+
 def generate_report(connection: psycopg2.extensions.connection, 
                    fecha_inicio: str, fecha_fin: str) -> Dict[str, Dict[str, Any]]:
     """Genera reporte de boletas agrupadas por número de ingreso."""
@@ -97,7 +117,8 @@ def generate_report(connection: psycopg2.extensions.connection,
     query = """
         SELECT OT.num_ingreso, OT.fecha_toma_muestra, P.nombre, P.apellido, P.sexo, P.ci_paciente, 
                RN.actualizado_timestamp, RN.valor, PR.id, OT.numero, OTDE.edad_dias, OTDE.edad_horas, 
-               SM.codigo_bloom, SM.codigo_dtic, OTDE.fecha_recepcion, RA.valor, RA.validado_por, OTDE.update
+               SM.codigo_bloom, SM.codigo_dtic, OTDE.fecha_recepcion, RA.valor, RA.validado_por, 
+               OTDE.update, RA.actualizado_timestamp
         FROM orden_trabajo OT
         LEFT JOIN paciente P ON OT.paciente_ID = P.id
         LEFT JOIN prueba_orden PO ON OT.id = PO.orden_id
@@ -127,7 +148,7 @@ def generate_report(connection: psycopg2.extensions.connection,
                 nombre_paciente = utf_to_ansi(f"{str(row[2] or '').strip()} {str(row[3] or '').strip()}")
                 sexo_paciente = row[4]
                 ci_paciente = row[5]
-                actualizado_timestamp = parse_datetime_with_time(row[6])
+                #actualizado_timestamp = parse_datetime_with_time(row[6])
                 id_prueba = row[8]
                 
                 # Calcular edad
@@ -150,23 +171,67 @@ def generate_report(connection: psycopg2.extensions.connection,
                 # Asignar el valor de Update desde OTDE.update
                 boletas_agrupadas[num_ingreso]["Update"] = row[17] if row[17] is not None else "#NULL#"
 
-                # Procesar resultado si hay id_prueba válido
+                # Procesar resultado para la prueba si id_prueba es válido (o rechazarla)
                 if id_prueba is not None:
                     clave_resultado = int(id_prueba)
-                    
-                    if clave_resultado in boletas_agrupadas[num_ingreso]["Resultados"]:
-                        valor_resultado = determine_result_value(id_prueba, row[7], row[15], row[16])
+                    valid_ids = {852, 859, 854, 883, 886, 885, 888, 889, 890, 891, 892}
+                    if clave_resultado in valid_ids:
+                        # Procesar resultado según el origen
+                        if clave_resultado in (852, 854, 859, 883, 886, 885, 888):
+                            valor_resultado = row[7] if row[7] not in (None, "") else "#NULL#"
+                        elif clave_resultado in (889, 890, 891, 892):
+                            if row[16] and row[16] != 0:
+                                valor_resultado = row[15] if row[15] not in (None, "") else "#NULL#"
+                            else:
+                                valor_resultado = row[7] if row[7] not in (None, "") else "#NULL#"
+                        else:
+                            valor_resultado = "#NULL#"
                         
-                        # Actualizar solo si hay valor válido
-                        if valor_resultado and valor_resultado != "" and valor_resultado != '#NULL#':
+                        # Actualizar solo si se obtuvo un valor válido
+                        if valor_resultado not in (None, "", "#NULL#"):
                             boletas_agrupadas[num_ingreso]["Resultados"][clave_resultado] = valor_resultado
-                            boletas_agrupadas[num_ingreso]["StdoBoleta"] = "A"
-                            
-                            if actualizado_timestamp:
-                                boletas_agrupadas[num_ingreso]["Procesamiento"] = actualizado_timestamp
-                                boletas_agrupadas[num_ingreso]["FResultado"] = actualizado_timestamp
-                            
-                            boletas_agrupadas[num_ingreso]["FechaRechazo"] = "#NULL#"
+                        
+                        # Procesar y asignar las fechas de Procesamiento y FResultado
+                        rn_timestamp = parse_datetime_with_time(row[6])   # RN.actualizado_timestamp
+                        ra_timestamp = parse_datetime_with_time(row[18])      # RA.actualizado_timestamp
+                        ts_final = rn_timestamp
+                        if (not ts_final or ts_final == "#NULL#") and ra_timestamp and ra_timestamp != "#NULL#":
+                            ts_final = ra_timestamp
+                        if ts_final and ts_final != "#NULL#":
+                            for campo_fecha in ("Procesamiento", "FResultado"):
+                                fecha_actual = boletas_agrupadas[num_ingreso][campo_fecha]
+                                if fecha_actual == "#NULL#":
+                                    boletas_agrupadas[num_ingreso][campo_fecha] = ts_final
+                                elif es_mas_antigua(ts_final, fecha_actual):
+                                    boletas_agrupadas[num_ingreso][campo_fecha] = ts_final
+                        
+                        # Como es un resultado aceptado:
+                        boletas_agrupadas[num_ingreso]["StdoBoleta"] = "A"
+                        boletas_agrupadas[num_ingreso]["FechaRechazo"] = "#NULL#"
+                    else:
+                        # Si la prueba tiene un id que no está en el conjunto válido, se marca como rechazado
+                        boletas_agrupadas[num_ingreso]["StdoBoleta"] = "R"
+                        # Asumir que la fecha de recepción (ya procesada) se toma para FechaRechazo:
+                        boletas_agrupadas[num_ingreso]["FechaRechazo"] = f"#{fecha_recepcion}#" if fecha_recepcion not in (None, "", "#NULL#") else "#NULL#"
+
+                # Reordenar resultados para los ids 889-892
+                # Se crea un diccionario temporal "reordered" con valores por defecto
+                reordered = {889: "#NULL#", 890: "#NULL#", 891: "#NULL#", 892: "#NULL#"}
+                # Se recorre cada resultado en ese rango (del vector en bruto)
+                for key in [889, 890, 891, 892]:
+                    val = boletas_agrupadas[num_ingreso]["Resultados"].get(key, "#NULL#")
+                    if val != "#NULL#":
+                        if val == "F":
+                            reordered[889] = "F"
+                        elif val == "A":
+                            reordered[890] = "A"
+                        elif val == "S":
+                            reordered[891] = "S"
+                        elif val == "C":
+                            reordered[892] = "C"
+                # Se asigna el vector ordenado de vuelta
+                for key in [889, 890, 891, 892]:
+                    boletas_agrupadas[num_ingreso]["Resultados"][key] = reordered[key]
 
     except Exception as e:
         print(f"Error generando el reporte: {e}")
@@ -174,6 +239,29 @@ def generate_report(connection: psycopg2.extensions.connection,
         if connection is not None:
             connection.close()
             print("Conexión a la base de datos cerrada.")
+    
+    # Al final del procesamiento, buscar boletas anormales
+    anormales = []
+    for boleta in boletas_agrupadas.values():
+        if (
+            boleta.get("StdoBoleta") == "R"
+            and boleta.get("Procesamiento", "#NULL#") != "#NULL#"
+            and boleta.get("FResultado", "#NULL#") != "#NULL#"
+        ):
+            anormales.append(boleta.get("Boleta") or boleta.get("num_ingreso"))
+            # Corregir el estado y la fecha de rechazo antes que se escriba el CSV y en la tblresults
+            boleta["StdoBoleta"] = "A"
+            boleta["FechaRechazo"] = "#NULL#"
+
+    if anormales:
+        from PyQt6.QtWidgets import QMessageBox
+        lista = ", ".join(str(x) for x in anormales)
+        QMessageBox.critical(
+            None,
+            "Datos anormales detectados",
+            f"Se detectaron boletas rechazadas (StdoBoleta=R) con fechas de procesamiento/resultados no nulas. se corrigio el estado y la fecha de rechazo pero se recomienda validacion manual de boletas por posible boleta duplicada\n"
+            f"Boletas afectadas: {lista}"
+        )
     
     return boletas_agrupadas
 
@@ -196,6 +284,7 @@ def write_to_csv(boletas_agrupadas: Dict[str, Dict[str, Any]], filename: str = "
     ]
 
     resultado_map = {
+        "Resultado": 852,
         "ResultadoIRT": 859,
         "ResultadoPKU": 854,
         "Resultado17OH": 883,
